@@ -1,7 +1,7 @@
 import os
 import struct
 import numpy as np
-from matplotlib import pyplot as pp
+from matplotlib import pyplot as plt
 import matplotlib as mpl
 """
 Loosely inspired by http://abel.ee.ucla.edu/cvxopt/_downloads/mnist.py
@@ -9,7 +9,7 @@ which is GPL licensed.
 """
 
 def read(dataset = "training", img_and_lbl = True, only_lbl = False, path = "."):
-    """ 3
+    """
     Python function for importing the MNIST data set.  It returns an iterator
     of 2-tuples with the first element being the label and the second element
     being a numpy.uint8 2D array of pixel data for the given image.
@@ -49,11 +49,11 @@ def show(image, figure_n = 1, pause_time = 0.005):
     Render a given numpy.uint8 2D array of pixel data.
     """
 
-    fig = pp.figure(figure_n)
+    fig = plt.figure(figure_n)
     ax = fig.add_subplot(1,1,1)
     imgplot = ax.imshow(image, cmap=mpl.cm.Greys)
     imgplot.set_interpolation('nearest')
     ax.xaxis.set_ticks_position('top')
     ax.yaxis.set_ticks_position('left')
-    pp.draw()
-    pp.pause(pause_time)
+    plt.draw()
+    plt.pause(pause_time)

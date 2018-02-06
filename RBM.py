@@ -3,6 +3,7 @@ import numpy as np
 import scipy as sp
 import utils
 import random as rnd
+import matplotlib.pyplot as plt
 
 
 
@@ -33,9 +34,9 @@ class RestrictedBoltzmannMachine:
 
         self.persistent_MC_hid = None
         self.momentum = np.zeros(self.W.shape)
-        self.dropout_selection = np.ones(self.W.shape)
         self.dropout = dropout
         self.p_drop = p_drop
+        self.obj = []
 
 
 
@@ -51,46 +52,35 @@ class RestrictedBoltzmannMachine:
 
     def activation_visible(self, x):
         if self.activation_fun_vis == 'Sigmoid':
-            return(1/(1 + np.exp(-x)))
+            return(1 / (1 + np.exp(-x)))
         else:
             raise(ValueError, "Only 'Sigmoid' implemented so far!")
 
 
     def activation_hidden(self, x):
         if self.activation_fun_hid == 'Sigmoid':
-            return(1/(1 + np.exp(-x)))
+            return(1 / (1 + np.exp(-x)))
         else:
             raise(ValueError, "Only 'Sigmoid' implemented so far!")
 
 
     def visible_to_hidden_signal(self, visible):
-        selected_weights = np.multiply(self.W, self.dropout_selection)
-        hidden_prob = self.activation_hidden(visible.dot(selected_weights))
+        #Function to calculate hidden probabilities from visible state
+        hidden_prob = self.activation_hidden(visible.dot(self.W))
         return(hidden_prob)
 
 
     def hidden_to_visible_signal(self, hidden):
-        selected_weights = np.multiply(self.W, self.dropout_selection)
-        hidden_prob = self.activation_visible(hidden.dot(np.transpose(selected_weights)))
+        #Function to calculate visible probabilities from hidden state
+        hidden_prob = self.activation_visible(hidden.dot(np.transpose(self.W)))
         return(hidden_prob)
 
 
-    def energy(self, visible, hidden):
-        energy = np.inner(visible.dot(self.W), hidden) # + np.inner(hidden, self.h_bias) + np.inner(visible, self.v_bias)
-        return(energy)
-
-
-    def loss(self, visible, hidden):
-        loss = self.energy(visible, hidden)+ self.lambda_w * np.abs(self.W).sum()
-        return(loss)
-
-    def free_energy(self, visible):
-        wx_b = visible.dot(self.W) + self.h_bias
-        vbias_term = np.inner(visible, self.v_bias)
-        hidden_term = np.sum(np.log(1 + np.exp(wx_b)), axis = 1)
-        energy = -hidden_term - vbias_term
-        return(energy)
-
+    def config_goodness(self, visible, hidden = None):
+        if hidden is None:
+            hidden = self.activation_hidden(np.transpose(visible.dot(self.W)))
+        goodness = -visible.dot(self.W).dot(hidden)
+        return(goodness.mean())
 
     def reconstruction(self, probs):
         U = np.random.uniform(0, 1, [probs.shape[0], probs.shape[1], self.visible_binom_n])
@@ -104,74 +94,48 @@ class RestrictedBoltzmannMachine:
         return(hidden)
 
 
-    def contrastive_divergence(self, visible, cd_num = 1, reconstruction = False):
+    def contrastive_divergence(self, visible, persistent = True, cd_num = 1, reconstruction = False):
         if self.dropout:
-            self.dropout_selection = np.random.binomial(1, self.p_drop, np.shape(self.W))
-        if reconstruction:
-            probs = self.visible_to_hidden_signal(visible)
-            hidden = self.hidden_sampling(probs)
-            cor_dat = np.einsum('ij,ik->ijk', visible, probs)
-            for i in range(cd_num):
-                recon_visible = self.reconstruction(self.hidden_to_visible_signal(hidden))
-                h_probs = self.visible_to_hidden_signal(recon_visible)
-                hidden = self.hidden_sampling(h_probs)
+            dropout_selection = np.random.binomial(1, 1 - self.p_drop, self.n_hidden)
 
-            cor_mod = np.einsum('ij,ik->ijk', recon_visible, h_probs)
-            gradient = cor_mod.mean(0) - cor_dat.mean(0)
 
-        else:
-            probs = self.visible_to_hidden_signal(visible)
-            hidden = self.hidden_sampling(probs)
-            cor_dat = np.einsum('ij,ik->ijk', visible, probs)
-            for i in range(cd_num):
+        probs = self.visible_to_hidden_signal(visible)
+        hidden = dropout_selection * self.hidden_sampling(probs)
+        cor_dat = np.einsum('ij,ik->ijk', visible, probs)
+        persistent_hidden = self.persistent_MC_hid
+        for i in range(cd_num):
+            #Calculate probabilities of the next visible layer
+            if persistent:
+                #If using persistent CD, those come from the persistent underlying MC
+                recon_visible = self.hidden_to_visible_signal(self.persistent_MC_hid)
+            elif not persistent:
+                # If using classical CD, those come from the currently calculated hidden value
                 recon_visible = self.hidden_to_visible_signal(hidden)
-                recon_visible = recon_visible*self.visible_binom_n
-                h_probs = self.visible_to_hidden_signal(recon_visible)
-                hidden = self.hidden_sampling(h_probs)
+            else:
+                raise(ValueError, "persistent has to be either True or False, no other value admitted.")
 
-            cor_mod = np.einsum('ij,ik->ijk', recon_visible, h_probs)
-            gradient = cor_mod.mean(0) - cor_dat.mean(0)
+            #Additional randomness by reconstructing the visible layer every time
+            if reconstruction:
+                recon_visible = self.reconstruction(recon_visible)
 
-        return(gradient)
+            #Scale a probability up by the N of the binomial
+            elif (not reconstruction) &  (self.activation_fun_vis == 'Sigmoid'):
+                recon_visible = recon_visible * self.visible_binom_n
+
+            #Raise error for any other implementation
+            else:
+                raise(ValueError, "reconstuction != True & self.activation_fun_vis != Sigmoid not available!")
+
+            #Calculate probabilities of next hidden layer
+            h_probs = self.visible_to_hidden_signal(recon_visible)
+            #Sample from those probabilities
+            hidden = self.hidden_sampling(h_probs)
 
 
+        self.persistent_MC_hid = hidden
 
-    def persistent_contrastive_divergence(self, visible, cd_num = 1, reconstruction = False):
-        if self.dropout:
-            self.dropout_selection = np.random.binomial(1, self.p_drop, np.shape(self.W))
-
-        if reconstruction:
-            probs = self.visible_to_hidden_signal(visible)
-            hidden = self.hidden_sampling(probs)
-            cor_dat = np.einsum('ij,ik->ijk', visible, probs)
-            persistent_hidden = self.persistent_MC_hid
-            for i in range(cd_num):
-                recon_visible = self.hidden_to_visible_signal(persistent_hidden)
-                if self.activation_fun_vis == 'Sigmoid':
-                    recon_visible = recon_visible*self.visible_binom_n
-                h_probs = self.visible_to_hidden_signal(recon_visible)
-                hidden = self.hidden_sampling(h_probs)
-            self.persistent_MC_hid = hidden
-            cor_mod = np.einsum('ij,ik->ijk', recon_visible, h_probs)
-            gradient = cor_mod.mean(0) - cor_dat.mean(0)
-            self.dropout_selection = np.ones(self.W.shape)
-
-        else:
-
-            probs = self.visible_to_hidden_signal(visible)
-            hidden = self.hidden_sampling(probs)
-            cor_dat = np.einsum('ij,ik->ijk', visible, probs)
-            persistent_hidden = self.persistent_MC_hid
-            for i in range(cd_num):
-                recon_visible = self.hidden_to_visible_signal(persistent_hidden)
-                if self.activation_fun_vis == 'Sigmoid':
-                    recon_visible = recon_visible*self.visible_binom_n
-                h_probs = self.visible_to_hidden_signal(recon_visible)
-                hidden = self.hidden_sampling(h_probs)
-            self.persistent_MC_hid = hidden
-            cor_mod = np.einsum('ij,ik->ijk', recon_visible, h_probs)
-            gradient = cor_mod.mean(0) - cor_dat.mean(0)
-            self.dropout_selection = np.ones(self.W.shape)
+        cor_mod = np.einsum('ij,ik->ijk', recon_visible, h_probs)
+        gradient = cor_mod.mean(0) - cor_dat.mean(0)
 
         return(gradient)
 
@@ -195,17 +159,19 @@ class RestrictedBoltzmannMachine:
             utils.show(pixels0, figure_n=2, pause_time=0.005)
             h_probs = self.visible_to_hidden_signal(recon_visible)
             hidden = self.hidden_sampling(h_probs)
+
         visible_p = self.hidden_to_visible_signal(hidden)
         recon_visible = self.reconstruction(visible_p)
 
         return(recon_visible)
 
 
+
     #Remember to ad regularization at some point
     def train(self, data, data_test, test_dim, alpha = 0.1, lambda_w = 0.0,
               batch_dim = 50, batches_n = 20, epochs = 10, seed = 123, recon_logical = False,
               persistent = True, initialize_persistent = True, momentum_coef = 0.5, daydream = True,
-              gibbs_lag = 1):
+              gibbs_lag = 1, loss_plot = True, cd_num = 10):
         np.random.seed(seed)
         self.lambda_w = lambda_w
         for j in range(1, epochs + 1):
@@ -216,25 +182,30 @@ class RestrictedBoltzmannMachine:
                 batch = data[idx, :]
 
                 #depending on the method chosen, the gradient approximation is estimated
-                if persistent:
-                    #The persistent markov chain is initialized at the beginning of the training only.
-                    if initialize_persistent:
-                        self.initialize_persistent_chain(batch)
-                        initialize_persistent = False
-                    grad = self.persistent_contrastive_divergence(batch, cd_num = j , reconstruction=recon_logical) +\
-                           self.lambda_w*np.sign(self.W)
+                #The underlying persistent MC is initialized if necessary
+                if initialize_persistent or (persistent and (self.persistent_MC_hid is None)):
+                    self.initialize_persistent_chain(batch)
+                    initialize_persistent = False
 
-                else:
-                    grad = self.contrastive_divergence(batch, cd_num = j, reconstruction = recon_logical) +\
-                           self.lambda_w*np.sign(self.W)
 
-                self.momentum = momentum_coef*self.momentum + grad
-                self.W = self.W - alpha*self.momentum
+                #Get the gradient
+                grad = self.contrastive_divergence(batch, persistent, cd_num, recon_logical) +\
+                        self.lambda_w * np.sign(self.W)
+
+                #Use momentum to speed up training
+                self.momentum = momentum_coef * self.momentum + grad
+                #Update the weights
+                self.W = self.W - alpha * self.momentum
 
             data_test_idx = np.random.choice(np.arange(np.shape(data_test)[0]), test_dim)
             data_test_block = data_test[data_test_idx,:]
-            print(self.energy(visible = data_test_block, hidden = data_test_block.dot(self.W)).mean())
-            self.dropout_selection = np.ones(self.W.shape)
+
+            goodness_of_config = self.config_goodness(visible = data_test_block, hidden = None)
+            if loss_plot:
+                self.obj.append(goodness_of_config)
+                self.plot_obj(self.obj, test_dim)
+
+            print(goodness_of_config)
             if daydream:
                 k = [rnd.randint(0, 5000), rnd.randint(0, 5000), rnd.randint(0, 5000), rnd.randint(0, 5000)]
                 pixels0 = data_test[k]
@@ -245,5 +216,15 @@ class RestrictedBoltzmannMachine:
                 self.daydreaming(dat,  gibbs_steps=gibbs_lag)
 
 
+    def plot_obj(self, obj, test_dim):
+        #Obj are the values of the objective function, i.e. configuration goodness
+        idx = np.arange(len(obj))
+        fig = plt.figure(3)
+        plt.plot(idx, obj)
+        fig.suptitle("Configuration Goodness over epoch for " + str(test_dim) + " test elements.")
+        plt.ylabel("Configuration Goodness")
+        plt.xlabel("Epoch")
+        fig.show()
+        plt.pause(0.01)
 
     
